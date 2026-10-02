@@ -276,6 +276,82 @@ tunnel URL plus `/mcp` (for example `https://<machine>.<tailnet>.ts.net/mcp`) an
 for your tailnet first. A `cloudflared` quick tunnel gets a new URL on every start. Read "Remote
 MCP over HTTP" in [SECURITY.md](SECURITY.md) first.
 
+#### Run the HTTP server as a user service
+
+Log in and configure `telegram` on this account before starting the service. Its Telegram session
+and HTTP bearer token are stored in the macOS Keychain or Linux Secret Service; neither belongs in
+the service file. Run `telegram mcp --token` in a terminal when you need to copy the bearer token
+into the remote connector. Keep the server bound to `127.0.0.1` and use your tunnel for remote
+access.
+
+**macOS (LaunchAgent)** — this runs in the logged-in user's session. Save the plist under
+`~/Library/LaunchAgents/com.better-tg-cli.mcp.plist`; launchd does not expand `~` or `$PATH` in
+plist values, so the commands below write absolute executable and log paths:
+
+```bash
+NODE_BIN="$(command -v node)"
+TELEGRAM_BIN="$(command -v telegram)"
+PLIST="$HOME/Library/LaunchAgents/com.better-tg-cli.mcp.plist"
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+cat > "$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.better-tg-cli.mcp</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$NODE_BIN</string><string>$TELEGRAM_BIN</string>
+    <string>mcp</string><string>--http</string><string>--read-only</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>EnvironmentVariables</key>
+  <dict><key>TG_NO_UPDATE_CHECK</key><string>1</string></dict>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/better-tg-cli-mcp.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/better-tg-cli-mcp.error.log</string>
+</dict>
+</plist>
+PLIST
+plutil -lint "$PLIST"
+launchctl bootstrap "gui/$(id -u)" "$PLIST"
+launchctl print "gui/$(id -u)/com.better-tg-cli.mcp"
+```
+
+Unload it with `launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.better-tg-cli.mcp.plist"`.
+
+**Linux (systemd user service)** — create
+`~/.config/systemd/user/better-tg-cli-mcp.service`:
+
+```bash
+NODE_BIN="$(command -v node)"
+TELEGRAM_BIN="$(command -v telegram)"
+UNIT="$HOME/.config/systemd/user/better-tg-cli-mcp.service"
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$UNIT" <<UNIT
+[Unit]
+Description=better-tg-cli MCP over HTTP
+After=default.target
+
+[Service]
+ExecStart="$NODE_BIN" "$TELEGRAM_BIN" mcp --http --read-only
+Restart=on-failure
+RestartSec=3
+Environment=TG_NO_UPDATE_CHECK=1
+
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user daemon-reload
+systemctl --user enable --now better-tg-cli-mcp.service
+systemctl --user status better-tg-cli-mcp.service
+```
+
+For a headless machine, run `sudo loginctl enable-linger "$USER"` so the user service can start
+at boot and survive logout. Stop it with
+`systemctl --user disable --now better-tg-cli-mcp.service`; inspect logs with
+`journalctl --user -u better-tg-cli-mcp.service`.
+
 ### claude.ai, ChatGPT and other apps (hosted relay)
 
 claude.ai (web and mobile), ChatGPT and other apps that add MCP servers by URL sign in with OAuth

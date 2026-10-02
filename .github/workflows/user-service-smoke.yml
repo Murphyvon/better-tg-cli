@@ -1,0 +1,59 @@
+name: User service smoke
+
+on:
+  push:
+    branches: [averray-19-service-docs]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  service-manager:
+    name: ${{ matrix.os }} user service
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - name: Install the package CLI used by the recipes
+        run: npm install --global --ignore-scripts --no-audit --no-fund .
+
+      - name: Install Ubuntu Secret Service dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus-user-session gnome-keyring libsecret-tools
+
+      - name: Exercise the systemd user service on Ubuntu 24.04
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          user_id="$(id -u)"
+          export XDG_RUNTIME_DIR="/run/user/${user_id}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+          sudo -n loginctl enable-linger "$USER"
+          sudo -n systemctl start "user@${user_id}.service"
+          test -S "${XDG_RUNTIME_DIR}/bus"
+          keyring_password="$(openssl rand -hex 32)"
+          eval "$(printf '%s' "$keyring_password" | gnome-keyring-daemon --unlock --components=secrets)"
+          unset keyring_password
+          node scripts/user-service-smoke.mjs
+
+      - name: Exercise the LaunchAgent on macOS 15
+        if: runner.os == 'macOS'
+        run: node scripts/user-service-smoke.mjs
